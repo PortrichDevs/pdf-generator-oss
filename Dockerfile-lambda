@@ -1,12 +1,47 @@
-FROM public.ecr.aws/lambda/python:3.11
+# 本番稼働イメージ (sha256:d40e5b4..., commit c4fcc6f) の描画結果を Amazon Linux 2023 で再現する。
+# 本番の構成と再現方針は #9 を参照。
+#   本番: Amazon Linux 2 / Python 3.11 / Chromium 117.0.5938.132 (EPEL 7) / IPA フォント + DejaVu Sans
+#   ここ: Amazon Linux 2023 / Python 3.12 / Chrome for Testing 117.0.5938.149 / IPA フォント + DejaVu Sans
+FROM public.ecr.aws/lambda/python:3.12@sha256:542771a596236be302beae1cb56f5ebd89608b3878b97428bf55b36aaeefa2c2
 
-RUN amazon-linux-extras install -y epel \
-  && yum install -y chromium chromedriver \
+# Chrome for Testing には 117.0.5938.132 がないため、117 系で最も近い .149 を使う
+ARG CHROME_VERSION=117.0.5938.149
+ARG CHROME_SHA256=98c56121b3c85e1ce113f3db8c18c8ae3764d60e7c0b3cb0b1984fae032c5de2
+ARG CHROMEDRIVER_SHA256=f2b519dfd406411a349b7927b1081e62f0659c20cea43293ea5709719e791653
+
+# フォントは本番と同じ構成 (IPA 4 種 + DejaVu Sans) にする。他のフォントが入ると
+# fontconfig の総称フォント (sans-serif / serif / monospace) の解決先が変わり、描画結果が変わる。
+# gtk3 は headless では不要で、依存で Cantarell などのフォントを持ち込むため入れない。
+RUN dnf install -y --setopt=install_weak_deps=0 \
     ipa-gothic-fonts ipa-mincho-fonts ipa-pgothic-fonts ipa-pmincho-fonts \
-  && yum clean all
+    dejavu-sans-fonts fontconfig \
+    alsa-lib atk at-spi2-atk cups-libs libdrm libxkbcommon mesa-libgbm nss pango \
+    libXcomposite libXdamage libXrandr libXtst \
+    unzip \
+  && dnf clean all
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
+# fontconfig の依存で必ず入る Noto Sans などを無効にし、本番と同じフォントだけを使う
+COPY docker/fonts-local.conf /etc/fonts/local.conf
+
+RUN BASE=https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64 \
+  && curl -sSfL "${BASE}/chrome-linux64.zip" -o /tmp/chrome.zip \
+  && curl -sSfL "${BASE}/chromedriver-linux64.zip" -o /tmp/chromedriver.zip \
+  && echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c - \
+  && echo "${CHROMEDRIVER_SHA256}  /tmp/chromedriver.zip" | sha256sum -c - \
+  && unzip -q /tmp/chrome.zip -d /opt \
+  && unzip -q /tmp/chromedriver.zip -d /opt \
+  && mv /opt/chrome-linux64 /opt/chrome \
+  && mv /opt/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
+  && ln -s /opt/chrome/chrome /usr/bin/chromium-browser \
+  && rm -rf /tmp/*.zip /opt/chromedriver-linux64
+
+# ビルド時の検証: 必須のものが欠けていたら失敗させる。
+# (latest イメージでは日本語フォントの導入が黙って失敗し、日本語が豆腐になっていた)
+COPY docker/verify-lambda-image.sh /usr/local/bin/verify-lambda-image.sh
+RUN CHROME_VERSION=${CHROME_VERSION} /usr/local/bin/verify-lambda-image.sh
+
+COPY requirements.txt constraints-lambda.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c constraints-lambda.txt --target "${LAMBDA_TASK_ROOT}"
 
 COPY core.py ${LAMBDA_TASK_ROOT}
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}
