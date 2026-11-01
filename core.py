@@ -19,7 +19,7 @@ def build_print_options(options: dict = None):
 def generate_pdf(html: str, print_options: dict) -> str:
     """Return base64-encoded pdf"""
 
-    with tempfile.NamedTemporaryFile(suffix=".html", dir="/tmp") as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".html") as tmp:
         tmp.write(html.encode())
         tmp.seek(0)
 
