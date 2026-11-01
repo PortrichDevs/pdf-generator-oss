@@ -11,9 +11,27 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Lambda イメージ (Dockerfile-lambda) の Python と揃える
+          python-version: "3.12"
           cache: "pip"
 
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt -c constraints-lambda.txt
 
       - run: python -m unittest
+
+  # main へのマージ後に ecr-lambda.yml で初めてビルドが壊れていると気づくことがないよう、
+  # すべての push で Lambda イメージをビルドする (push はしない)。
+  # ビルド中に docker/verify-lambda-image.sh がブラウザ・フォント構成を検証する。
+  build-lambda-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile-lambda
+          platforms: linux/amd64
+          push: false
