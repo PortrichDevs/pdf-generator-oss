@@ -12,8 +12,8 @@ HTML を受け取り、headless Chromium (Selenium + CDP `Page.printToPDF`) で 
 ## コマンド
 
 ```sh
-# 依存導入 (Python 3.11 / CI と同じ)
-pip install -r requirements.txt
+# 依存導入 (Python 3.12 / Lambda イメージ・CI と同じ)
+pip install -r requirements.txt -c constraints-lambda.txt
 
 # テスト (unittest。pytest は使っていない)
 python -m unittest
@@ -44,11 +44,16 @@ Lint / フォーマッタの設定はリポジトリに存在しない。
   - Lambda 版は base64 のまま `isBase64Encoded: True` で返し、API Gateway がバイナリに戻す (201, `application/pdf`)。
   - README の「Response is Base64-encoded」はクライアントから見た挙動とは異なるので注意。
 - `tests.py` は `core.webdriver` / 各ハンドラの `generate_pdf` を `unittest.mock.patch` で差し替えており、Chrome なしで実行できる。
-- 2 つの Dockerfile は差異がある: Lambda 版のみ日本語フォント (IPA 系) を入れている。ベースイメージは `public.ecr.aws/lambda/python:3.11` に固定 (Amazon Linux 2 のため `amazon-linux-extras` で EPEL を入れて chromium を取得)。
+- `Dockerfile-lambda` は、本番稼働イメージ (commit `c4fcc6f`、Amazon Linux 2 + Chromium 117 + IPA フォント) の**描画結果を Amazon Linux 2023 で再現する**ことを目的にしている (#9)。
+  - ベースイメージ (digest)、Chrome for Testing のバージョンと checksum、Python パッケージ (`constraints-lambda.txt`) をすべて固定している。
+  - フォントは本番と同じ IPA 4 種 + DejaVu Sans だけを使う。依存で入る他のフォント (Noto Sans など) は `docker/fonts-local.conf` で無効にしている。他のフォントが入ると `sans-serif` などの総称フォントの解決先が変わり、PDF の見た目が変わる。
+  - `docker/verify-lambda-image.sh` がビルド時に、ブラウザのバージョン・共有ライブラリ・フォント構成・総称フォントの解決先を検証し、本番と違えばビルドを失敗させる。パッケージやフォントを変更するときは、このスクリプトの期待値も見直すこと。
+  - selenium 4.4.3 はブラウザを自動で探すので、Chrome for Testing を `/usr/bin/chromium-browser` に symlink している (`core.py` は本番と同一に保つ)。
+- Flask 版の `Dockerfile` には日本語フォントが入っておらず、Lambda 版とは構成が異なる (#8)。
 
 ## デプロイ / インフラ
 
-- `.github/workflows/test.yml`: 全 push で `python -m unittest`。
+- `.github/workflows/test.yml`: 全 push で `python -m unittest` と、Lambda イメージのビルド (push はしない。ビルド時の検証もここで走る)。
 - `.github/workflows/ecr-lambda.yml`: `main` への push で `Dockerfile-lambda` をビルドし ECR (`ap-northeast-1`, リポジトリ `pdf-generator`) に `latest` と commit SHA タグで push する。
 - `terraform/`: ECR / Lambda (timeout 60s, memory 1536MB) / API Gateway HTTP API (stage `v1`, `$default` ルート) をモジュール分割で管理。Terraform state はローカル (backend 設定なし)。
   - Lambda の `image_uri` は `lifecycle.ignore_changes` で Terraform 管理外とし、CI 側で更新する方針。ただし現状の `ecr-lambda.yml` はイメージ push までで、Lambda 関数の更新ステップはまだ無い。
